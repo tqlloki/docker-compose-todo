@@ -468,3 +468,380 @@ GitHub Actions Secrets
 terraform.tfvars local
 Ansible Vault nếu cần
 ```
+
+---
+
+## 🚚 Migrate production sang VPS mới
+
+Khi đổi production từ VPS A sang VPS B, cần nhớ 2 phần khác nhau:
+
+```text
+App image/config → deploy lại được bằng GitHub Actions
+MongoDB data     → phải backup/restore nếu dùng MongoDB local trong Docker volume
+```
+
+### Trường hợp không cần giữ data cũ
+
+Nếu đây chỉ là bài tập/test và không cần dữ liệu cũ:
+
+1. Tạo VPS B bằng Terraform.
+2. Cài Docker trên VPS B bằng Ansible.
+3. Sửa GitHub Secret:
+
+```text
+REMOTE_HOST=<IP_VPS_B>
+```
+
+4. Trỏ DNS `DOMAIN` về IP VPS B.
+5. Re-run GitHub Actions hoặc push commit mới.
+
+GitHub Actions sẽ deploy lại stack lên VPS B.
+
+---
+
+### Trường hợp cần giữ data MongoDB
+
+Vì MongoDB hiện chạy trong Docker volume local:
+
+```text
+VPS A: todo-api_mongo_data
+VPS B: todo-api_mongo_data
+```
+
+nên data không tự đi theo VPS mới. Cần backup từ VPS A rồi restore sang VPS B.
+
+#### 1. Backup MongoDB trên VPS A
+
+SSH vào VPS A:
+
+```bash
+ssh -p 2018 root@<IP_VPS_A>
+```
+
+Backup:
+
+```bash
+cd /opt/todo-api
+
+docker exec todo-mongo mongodump --archive=/tmp/todo-mongo.archive
+docker cp todo-mongo:/tmp/todo-mongo.archive /tmp/todo-mongo.archive
+```
+
+Kiểm tra file:
+
+```bash
+ls -lh /tmp/todo-mongo.archive
+```
+
+#### 2. Copy file backup từ VPS A sang máy local
+
+Trên máy local/dev:
+
+```bash
+scp -P 2018 root@<IP_VPS_A>:/tmp/todo-mongo.archive ./todo-mongo.archive
+```
+
+Nếu SSH dùng port 22:
+
+```bash
+scp root@<IP_VPS_A>:/tmp/todo-mongo.archive ./todo-mongo.archive
+```
+
+#### 3. Copy file backup sang VPS B
+
+```bash
+scp -P 2018 ./todo-mongo.archive root@<IP_VPS_B>:/tmp/todo-mongo.archive
+```
+
+Nếu SSH dùng port 22:
+
+```bash
+scp ./todo-mongo.archive root@<IP_VPS_B>:/tmp/todo-mongo.archive
+```
+
+#### 4. Restore MongoDB trên VPS B
+
+Đảm bảo stack trên VPS B đã chạy ít nhất một lần để có container `todo-mongo`:
+
+```bash
+ssh -p 2018 root@<IP_VPS_B>
+cd /opt/todo-api
+
+docker compose -f docker-compose.prod.yml up -d mongo
+```
+
+Restore:
+
+```bash
+docker cp /tmp/todo-mongo.archive todo-mongo:/tmp/todo-mongo.archive
+docker exec todo-mongo mongorestore --drop --archive=/tmp/todo-mongo.archive
+```
+
+Sau đó start toàn bộ stack:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Kiểm tra:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+curl https://<DOMAIN>/todos
+```
+
+---
+
+### Script migrate nhanh
+
+Có thể tạo file local:
+
+```text
+scripts/migrate-mongo.sh
+```
+
+Nội dung:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+OLD_HOST="${1:?Missing old VPS IP}"
+NEW_HOST="${2:?Missing new VPS IP}"
+SSH_PORT="${3:-22}"
+ARCHIVE="todo-mongo-$(date +%Y%m%d-%H%M%S).archive"
+
+ssh -p "$SSH_PORT" root@"$OLD_HOST" "
+  cd /opt/todo-api
+  docker exec todo-mongo mongodump --archive=/tmp/$ARCHIVE
+  docker cp todo-mongo:/tmp/$ARCHIVE /tmp/$ARCHIVE
+"
+
+scp -P "$SSH_PORT" root@"$OLD_HOST":/tmp/$ARCHIVE /tmp/$ARCHIVE
+scp -P "$SSH_PORT" /tmp/$ARCHIVE root@"$NEW_HOST":/tmp/$ARCHIVE
+
+ssh -p "$SSH_PORT" root@"$NEW_HOST" "
+  cd /opt/todo-api
+  docker compose -f docker-compose.prod.yml up -d mongo
+  docker cp /tmp/$ARCHIVE todo-mongo:/tmp/$ARCHIVE
+  docker exec todo-mongo mongorestore --drop --archive=/tmp/$ARCHIVE
+  docker compose -f docker-compose.prod.yml up -d
+"
+
+echo "Migration finished: $OLD_HOST → $NEW_HOST"
+```
+
+Chạy:
+
+```bash
+chmod +x scripts/migrate-mongo.sh
+./scripts/migrate-mongo.sh <IP_VPS_A> <IP_VPS_B> 2018
+```
+
+---
+
+### Cách production sạch hơn
+
+Nếu không muốn phải migrate data mỗi lần đổi VPS, nên tách database ra khỏi VPS app:
+
+```text
+VPS App A/B: api + nginx
+DB riêng: MongoDB Atlas / Managed MongoDB / VPS DB riêng
+```
+
+Khi đó đổi VPS chỉ cần:
+
+```text
+1. Cài Docker trên VPS mới
+2. Đổi REMOTE_HOST trong GitHub Secrets
+3. Đổi DNS DOMAIN sang IP mới
+4. Re-run GitHub Actions
+```
+
+Data nằm ở DB riêng nên không cần backup/restore giữa VPS app.
+
+---
+
+## 🕛 Scheduled MongoDB backup lên Cloudflare R2
+
+Bài backup dùng database MongoDB của project này và upload backup lên Cloudflare R2 mỗi 12 giờ.
+
+### Luồng hoạt động
+
+```text
+GitHub Actions schedule mỗi 12 giờ
+  ↓ SSH vào VPS
+Upload script backup
+  ↓
+docker exec todo-mongo mongodump
+  ↓
+Nén thành .tar.gz
+  ↓
+Upload lên Cloudflare R2 bằng aws-cli S3-compatible endpoint
+```
+
+### File đã chuẩn bị
+
+```text
+.github/workflows/backup-mongo-r2.yml
+scripts/backup-mongo-to-r2.sh
+scripts/restore-latest-mongo-from-r2.sh
+```
+
+### Tạo R2 bucket bằng Terraform
+
+Trong Terraform chung:
+
+```text
+/home/ubuntu/workspace/terraform/create_vps_openstack
+```
+
+đã có resource:
+
+```hcl
+resource "cloudflare_r2_bucket" "backup_storage" {
+  account_id    = var.cloudflare_account_id
+  name          = var.r2_backup_bucket_name
+  location      = var.r2_backup_bucket_location
+  storage_class = var.r2_backup_bucket_storage_class
+}
+```
+
+Cấu hình trong `terraform.tfvars`:
+
+```hcl
+r2_backup_bucket_name = "todo-mongo-backups"
+r2_backup_bucket_location = "APAC"
+r2_backup_bucket_storage_class = "Standard"
+```
+
+Chạy:
+
+```bash
+cd /home/ubuntu/workspace/terraform/create_vps_openstack
+terraform plan
+terraform apply
+```
+
+### Tạo R2 access key
+
+Trong Cloudflare Dashboard:
+
+```text
+R2 → Manage R2 API Tokens → Create API token
+```
+
+Quyền cần có:
+
+```text
+Object Read & Write
+```
+
+Giới hạn vào bucket backup nếu Cloudflare cho chọn scope bucket.
+
+### GitHub Secrets cần thêm
+
+Ngoài các secret deploy cũ, thêm:
+
+```text
+R2_BUCKET              tên bucket, ví dụ todo-mongo-backups
+R2_ACCOUNT_ID          Cloudflare Account ID
+R2_ACCESS_KEY_ID       R2 Access Key ID
+R2_SECRET_ACCESS_KEY   R2 Secret Access Key
+```
+
+Workflow backup vẫn dùng các secret SSH cũ:
+
+```text
+REMOTE_HOST
+REMOTE_USER
+REMOTE_PORT
+SSH_PRIVATE_KEY
+```
+
+### Chạy backup thủ công
+
+Vào GitHub repo:
+
+```text
+Actions → Backup MongoDB to Cloudflare R2 → Run workflow
+```
+
+Hoặc trên VPS, nếu đã có script:
+
+```bash
+cd /opt/todo-api
+
+R2_BUCKET="todo-mongo-backups" \
+R2_ACCOUNT_ID="<account_id>" \
+R2_ACCESS_KEY_ID="<access_key>" \
+R2_SECRET_ACCESS_KEY="<secret_key>" \
+./backup-mongo-to-r2.sh
+```
+
+### Lịch backup
+
+Workflow chạy mỗi 12 giờ theo UTC:
+
+```yaml
+- cron: "0 */12 * * *"
+```
+
+Tức là khoảng:
+
+```text
+00:00 UTC và 12:00 UTC
+07:00 và 19:00 giờ Việt Nam
+```
+
+### Kiểm tra backup trên R2
+
+Backup sẽ nằm trong prefix:
+
+```text
+mongodb/
+```
+
+Tên file dạng:
+
+```text
+todo-mongo-20260512T120000Z.archive.tar.gz
+```
+
+### Restore latest backup từ R2
+
+Upload script restore lên VPS nếu cần:
+
+```bash
+scp -P 2018 scripts/restore-latest-mongo-from-r2.sh root@<IP_VPS>:/opt/todo-api/
+```
+
+SSH vào VPS:
+
+```bash
+ssh -p 2018 root@<IP_VPS>
+cd /opt/todo-api
+chmod +x restore-latest-mongo-from-r2.sh
+```
+
+Restore bản mới nhất:
+
+```bash
+R2_BUCKET="todo-mongo-backups" \
+R2_ACCOUNT_ID="<account_id>" \
+R2_ACCESS_KEY_ID="<access_key>" \
+R2_SECRET_ACCESS_KEY="<secret_key>" \
+./restore-latest-mongo-from-r2.sh
+```
+
+Script sẽ:
+
+```text
+1. Tìm file backup mới nhất trong R2 prefix mongodb/
+2. Download về VPS
+3. Giải nén .tar.gz
+4. docker cp archive vào todo-mongo
+5. mongorestore --drop
+```
+
+Lưu ý: `mongorestore --drop` sẽ xóa collection hiện tại rồi restore từ backup.

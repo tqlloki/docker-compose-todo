@@ -1,0 +1,48 @@
+name: Backup MongoDB to Cloudflare R2
+
+on:
+  schedule:
+    # Every 12 hours, UTC.
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+
+env:
+  APP_DIR: /opt/todo-api
+  R2_PREFIX: mongodb
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload backup script to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          source: "scripts/backup-mongo-to-r2.sh"
+          target: "${{ env.APP_DIR }}"
+          strip_components: 1
+
+      - name: Run MongoDB backup and upload to R2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.REMOTE_HOST }}
+          username: ${{ secrets.REMOTE_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.REMOTE_PORT }}
+          script: |
+            set -e
+            cd ${{ env.APP_DIR }}
+            chmod +x backup-mongo-to-r2.sh
+            APP_DIR=${{ env.APP_DIR }} \
+            R2_BUCKET='${{ secrets.R2_BUCKET }}' \
+            R2_ACCOUNT_ID='${{ secrets.R2_ACCOUNT_ID }}' \
+            R2_ACCESS_KEY_ID='${{ secrets.R2_ACCESS_KEY_ID }}' \
+            R2_SECRET_ACCESS_KEY='${{ secrets.R2_SECRET_ACCESS_KEY }}' \
+            R2_PREFIX='${{ env.R2_PREFIX }}' \
+            ./backup-mongo-to-r2.sh
