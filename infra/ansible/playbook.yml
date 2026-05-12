@@ -1,0 +1,103 @@
+---
+- name: Prepare VPS for Todo API Docker Compose deployment
+  hosts: todo_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    app_dir: /opt/todo-api
+    compose_source: ../../deploy/docker-compose.prod.yml
+    env_source: ./app.env
+    docker_apt_key_path: /etc/apt/keyrings/docker.asc
+
+  tasks:
+    - name: Assert target OS is Ubuntu or Debian
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution in ['Ubuntu', 'Debian']
+        fail_msg: "This playbook supports Ubuntu/Debian only. Current OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Install required apt packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Create Docker apt key directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download Docker apt GPG key
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg"
+        dest: "{{ docker_apt_key_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        force: true
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ ansible_architecture | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }}
+          signed-by={{ docker_apt_key_path }}]
+          https://download.docker.com/linux/{{ ansible_distribution | lower }}
+          {{ ansible_distribution_release }} stable
+        state: present
+        filename: docker
+        update_cache: true
+
+    - name: Install Docker Engine and Compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker service is enabled and running
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy production Docker Compose file
+      ansible.builtin.copy:
+        src: "{{ compose_source }}"
+        dest: "{{ app_dir }}/docker-compose.prod.yml"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Copy app env file if present
+      ansible.builtin.copy:
+        src: "{{ env_source }}"
+        dest: "{{ app_dir }}/.env"
+        owner: root
+        group: root
+        mode: "0600"
+      ignore_errors: true
+
+    - name: Show next deployment command
+      ansible.builtin.debug:
+        msg:
+          - "Server is ready. CI/CD will deploy with: docker compose -f {{ app_dir }}/docker-compose.prod.yml up -d"
+          - "Manual deploy: cd {{ app_dir }} && docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d"

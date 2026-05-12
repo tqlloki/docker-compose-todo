@@ -1,0 +1,30 @@
+services:
+  api:
+    image: ${IMAGE_NAME:-docker-compose-todo:latest}
+    container_name: todo-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/todoapp}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    container_name: todo-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  mongo_data:

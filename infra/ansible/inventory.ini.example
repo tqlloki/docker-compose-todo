@@ -1,0 +1,2 @@
+[todo_servers]
+todo-api-01 ansible_host=YOUR_DROPLET_IP ansible_user=root
