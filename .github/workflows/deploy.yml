@@ -76,13 +76,19 @@ jobs:
 
             cat > .env <<'EOF'
             NODE_ENV=production
-            APP_PORT=3000
             MONGO_URI=mongodb://mongo:27017/todoapp
+            DOMAIN=${{ secrets.DOMAIN }}
+            LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
             # CI/CD luôn deploy đúng image vừa build.
             printf '\nIMAGE_NAME=%s\n' '${{ env.IMAGE_REPO }}:${{ github.sha }}' >> .env
 
-            docker compose -f docker-compose.prod.yml pull
+            for i in 1 2 3 4 5; do
+              docker compose -f docker-compose.prod.yml pull && break
+              echo "docker compose pull failed, retry $i/5..."
+              sleep 10
+            done
+
             docker compose -f docker-compose.prod.yml up -d
             docker image prune -f

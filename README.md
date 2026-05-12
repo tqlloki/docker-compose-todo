@@ -197,14 +197,17 @@ REMOTE_HOST          IP VPS lấy từ Terraform output vm-ip
 REMOTE_USER          root hoặc user SSH
 REMOTE_PORT          port SSH, ví dụ 2018 hoặc 22
 SSH_PRIVATE_KEY      private key dùng SSH vào VPS
+DOMAIN               domain/subdomain trỏ về VPS, ví dụ todo.example.com
+LETSENCRYPT_EMAIL    email dùng đăng ký Let's Encrypt
 ```
 
 Trong bài tập này `.env` không có secret, nên GitHub Actions sẽ tự tạo trên VPS:
 
 ```env
 NODE_ENV=production
-APP_PORT=3000
 MONGO_URI=mongodb://mongo:27017/todoapp
+DOMAIN=todo.example.com
+LETSENCRYPT_EMAIL=admin@example.com
 IMAGE_NAME=<image-vua-build>
 ```
 
@@ -242,6 +245,8 @@ push main
 → Ghi IMAGE_NAME bằng image vừa build
 → docker compose pull
 → docker compose up -d
+→ nginx-proxy nhận domain
+→ acme-companion tự cấp SSL Let's Encrypt
 ```
 
 Project cũ `node-docker-deploy` dùng:
@@ -370,6 +375,51 @@ Project app:     /home/ubuntu/workspace/docker-compose-todo
 ```
 
 ---
+
+
+## 🔐 Nginx Docker + SSL miễn phí
+
+Production compose đã tích hợp sẵn:
+
+```text
+nginxproxy/nginx-proxy
+nginxproxy/acme-companion
+```
+
+Luồng:
+
+```text
+https://DOMAIN
+  ↓
+nginx-proxy container :443
+  ↓
+todo-api container :3000
+  ↓
+todo-mongo container
+```
+
+Điều kiện để SSL tự cấp thành công:
+
+1. Domain/subdomain phải trỏ A record về IP VPS.
+2. Port `80` và `443` trên VPS phải mở.
+3. Không có Nginx/Apache/service khác chiếm port `80/443` trên VPS.
+4. GitHub Secrets phải có:
+
+```text
+DOMAIN
+LETSENCRYPT_EMAIL
+```
+
+Kiểm tra trên VPS:
+
+```bash
+cd /opt/todo-api
+docker compose -f docker-compose.prod.yml ps
+docker logs nginx-proxy-acme --tail=100
+docker logs nginx-proxy --tail=100
+```
+
+SSL lần đầu có thể mất 1-3 phút.
 
 ## 🌐 Bonus: Nginx reverse proxy
 
