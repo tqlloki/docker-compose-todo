@@ -28,18 +28,35 @@ services:
     depends_on:
       - nginx-proxy
 
-  api:
-    image: ${IMAGE_NAME:-docker-compose-todo:latest}
-    container_name: todo-api
+  api-blue:
+    image: ${BLUE_IMAGE_NAME:-${IMAGE_NAME:-docker-compose-todo:latest}}
+    container_name: todo-api-blue
     restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
       MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/todoapp}
-      VIRTUAL_HOST: ${DOMAIN}
+      VIRTUAL_HOST: ${BLUE_VIRTUAL_HOST:-}
       VIRTUAL_PORT: 3000
-      LETSENCRYPT_HOST: ${DOMAIN}
-      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      LETSENCRYPT_HOST: ${BLUE_LETSENCRYPT_HOST:-}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    expose:
+      - "3000"
+    depends_on:
+      - mongo
+
+  api-green:
+    image: ${GREEN_IMAGE_NAME:-${IMAGE_NAME:-docker-compose-todo:latest}}
+    container_name: todo-api-green
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017/todoapp}
+      VIRTUAL_HOST: ${GREEN_VIRTUAL_HOST:-}
+      VIRTUAL_PORT: 3000
+      LETSENCRYPT_HOST: ${GREEN_LETSENCRYPT_HOST:-}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
     expose:
       - "3000"
     depends_on:

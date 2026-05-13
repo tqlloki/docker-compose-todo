@@ -845,3 +845,155 @@ Script sẽ:
 ```
 
 Lưu ý: `mongorestore --drop` sẽ xóa collection hiện tại rồi restore từ backup.
+
+---
+
+## 🔵🟢 Blue-Green deployment
+
+Project này đã được nâng từ deploy một container API sang mô hình blue-green.
+
+### Ý tưởng
+
+Luôn có 2 slot API:
+
+```text
+api-blue   → container todo-api-blue
+api-green  → container todo-api-green
+```
+
+Tại một thời điểm chỉ một slot nhận domain production:
+
+```text
+DOMAIN → nginx-proxy → active slot
+```
+
+Slot còn lại là inactive, dùng để deploy version mới trước. Sau khi healthcheck OK mới switch traffic.
+
+### Luồng deploy
+
+```text
+GitHub Actions build image mới
+  ↓
+Push Docker Hub với tag commit SHA
+  ↓
+SSH vào VPS
+  ↓
+Đọc slot đang active từ /opt/todo-api/.active-slot
+  ↓
+Deploy image mới vào slot inactive
+  ↓
+Healthcheck http://127.0.0.1:3000/health bên trong container inactive
+  ↓
+Nếu OK: gán DOMAIN sang slot mới
+  ↓
+nginx-proxy tự reload và chuyển traffic
+```
+
+Nếu healthcheck fail:
+
+```text
+Traffic vẫn ở slot cũ
+Deploy fail
+Log container mới được in ra để debug
+```
+
+### File liên quan
+
+```text
+deploy/docker-compose.prod.yml
+scripts/blue-green-deploy.sh
+scripts/blue-green-rollback.sh
+.github/workflows/deploy.yml
+```
+
+### Production compose hiện có
+
+```text
+nginx-proxy
+acme-companion
+api-blue
+api-green
+mongo
+```
+
+MongoDB vẫn chỉ có một service dùng chung:
+
+```text
+todo-mongo
+```
+
+Nên blue-green chỉ áp dụng cho app API, không nhân đôi database.
+
+### State active slot
+
+Trên VPS, slot đang active được lưu ở:
+
+```text
+/opt/todo-api/.active-slot
+```
+
+Nội dung là:
+
+```text
+blue
+```
+
+hoặc:
+
+```text
+green
+```
+
+Kiểm tra:
+
+```bash
+cd /opt/todo-api
+cat .active-slot
+docker compose -f docker-compose.prod.yml ps
+```
+
+### Rollback thủ công
+
+Nếu bản mới có lỗi sau khi đã switch traffic, rollback về slot còn lại:
+
+```bash
+cd /opt/todo-api
+
+DOMAIN="todo.example.com" \
+LETSENCRYPT_EMAIL="admin@example.com" \
+./blue-green-rollback.sh
+```
+
+Thay `DOMAIN` và `LETSENCRYPT_EMAIL` bằng giá trị thật.
+
+Rollback này không rebuild image. Nó chỉ chuyển domain từ slot hiện tại sang slot còn lại.
+
+### Kiểm tra image mỗi slot
+
+```bash
+docker inspect todo-api-blue --format '{{.Config.Image}}'
+docker inspect todo-api-green --format '{{.Config.Image}}'
+```
+
+### Kiểm tra log
+
+```bash
+docker logs todo-api-blue --tail=100
+docker logs todo-api-green --tail=100
+docker logs nginx-proxy --tail=100
+docker logs nginx-proxy-acme --tail=100
+```
+
+### Lưu ý về database migration
+
+Blue-green giúp giảm downtime cho app container, nhưng không tự giải quyết schema migration phức tạp.
+
+Nguyên tắc an toàn:
+
+```text
+1. Migration DB phải backward-compatible.
+2. App version cũ và mới nên cùng đọc được schema trong giai đoạn chuyển traffic.
+3. Không chạy migration phá schema trước khi chắc chắn rollback không cần nữa.
+```
+
+Với todo API hiện tại chưa có migration schema phức tạp, nên ổn.

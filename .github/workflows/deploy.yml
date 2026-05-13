@@ -1,4 +1,4 @@
-name: Build and Deploy Docker Compose
+name: Build and Blue-Green Deploy
 
 on:
   push:
@@ -52,18 +52,18 @@ jobs:
             set -e
             mkdir -p ${{ env.APP_DIR }}
 
-      - name: Upload production Docker Compose file
+      - name: Upload production files
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.REMOTE_HOST }}
           username: ${{ secrets.REMOTE_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.REMOTE_PORT }}
-          source: "deploy/docker-compose.prod.yml"
+          source: "deploy/docker-compose.prod.yml,scripts/blue-green-deploy.sh,scripts/blue-green-rollback.sh"
           target: "${{ env.APP_DIR }}"
           strip_components: 1
 
-      - name: Deploy on VPS with Docker Compose
+      - name: Blue-green deploy on VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.REMOTE_HOST }}
@@ -73,22 +73,11 @@ jobs:
           script: |
             set -e
             cd ${{ env.APP_DIR }}
-
-            cat > .env <<'EOF'
-            NODE_ENV=production
-            MONGO_URI=mongodb://mongo:27017/todoapp
-            DOMAIN=${{ secrets.DOMAIN }}
-            LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
-            EOF
-
-            # CI/CD luôn deploy đúng image vừa build.
-            printf '\nIMAGE_NAME=%s\n' '${{ env.IMAGE_REPO }}:${{ github.sha }}' >> .env
-
-            for i in 1 2 3 4 5; do
-              docker compose -f docker-compose.prod.yml pull && break
-              echo "docker compose pull failed, retry $i/5..."
-              sleep 10
-            done
-
-            docker compose -f docker-compose.prod.yml up -d
+            chmod +x blue-green-deploy.sh blue-green-rollback.sh
+            APP_DIR=${{ env.APP_DIR }} \
+            NEW_IMAGE='${{ env.IMAGE_REPO }}:${{ github.sha }}' \
+            DOMAIN='${{ secrets.DOMAIN }}' \
+            LETSENCRYPT_EMAIL='${{ secrets.LETSENCRYPT_EMAIL }}' \
+            MONGO_URI='mongodb://mongo:27017/todoapp' \
+            ./blue-green-deploy.sh
             docker image prune -f
